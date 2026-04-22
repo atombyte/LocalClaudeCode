@@ -19,26 +19,69 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($Yes) { $NonInteractive = $true }
 
-# Resolve the real user home. $env:USERPROFILE is unreliable (can be
-# redirected by launchers, portable setups, or elevated shells). Claude Code
-# and Node-based tools read from Node's os.homedir() — use the same source so
-# configs land where Claude Code will actually look for them.
-function Resolve-HomeDir {
-    if ($HomeDir) { return (Resolve-Path -LiteralPath $HomeDir).Path }
+# Resolve the target home directory. The hard part is that USERPROFILE can be
+# redirected (portable setups, per-project launchers) while the user's real
+# Claude Code config already lives at C:\Users\<name>\.claude. We prefer any
+# candidate that already contains .claude\settings.json, falling back to the
+# standard C:\Users\<USERNAME> location, and only then to env vars.
+function Get-HomeCandidates {
+    $c = [System.Collections.Generic.List[string]]::new()
+    if ($HomeDir) { $c.Add((Resolve-Path -LiteralPath $HomeDir).Path) }
+    if ($env:USERNAME) {
+        $std = Join-Path 'C:\Users' $env:USERNAME
+        if (Test-Path -LiteralPath $std) { $c.Add($std) }
+    }
+    # SHGetFolderPath(UserProfile) — may or may not honor USERPROFILE redirection.
+    try {
+        $sp = [System.Environment]::GetFolderPath('UserProfile')
+        if ($sp -and (Test-Path -LiteralPath $sp)) { $c.Add($sp) }
+    } catch { }
+    if ($env:HOME         -and (Test-Path -LiteralPath $env:HOME))         { $c.Add($env:HOME) }
+    if ($env:USERPROFILE  -and (Test-Path -LiteralPath $env:USERPROFILE))  { $c.Add($env:USERPROFILE) }
+    if ($env:HOMEDRIVE -and $env:HOMEPATH) {
+        $cand = Join-Path $env:HOMEDRIVE $env:HOMEPATH
+        if (Test-Path -LiteralPath $cand) { $c.Add($cand) }
+    }
     if (Get-Command node -ErrorAction SilentlyContinue) {
         try {
             $h = (& node -e "process.stdout.write(require('os').homedir())" 2>$null).Trim()
-            if ($h -and (Test-Path -LiteralPath $h)) { return $h }
+            if ($h -and (Test-Path -LiteralPath $h)) { $c.Add($h) }
         } catch { }
     }
-    if ($env:HOME -and (Test-Path -LiteralPath $env:HOME)) { return $env:HOME }
-    # Last resort: construct from HOMEDRIVE+HOMEPATH (Windows-standard) before
-    # falling back to USERPROFILE, which we consider least trustworthy here.
-    if ($env:HOMEDRIVE -and $env:HOMEPATH) {
-        $cand = Join-Path $env:HOMEDRIVE $env:HOMEPATH
-        if (Test-Path -LiteralPath $cand) { return $cand }
+    return $c | Select-Object -Unique
+}
+
+function Resolve-HomeDir {
+    $cands = Get-HomeCandidates
+    if ($HomeDir) { return $cands[0] }
+
+    # 1. Any candidate that already has a Claude config → use it.
+    foreach ($p in $cands) {
+        if (Test-Path -LiteralPath (Join-Path $p '.claude\settings.json')) { return $p }
     }
+    # 2. First candidate (standard C:\Users\<USERNAME> wins if it exists).
+    if ($cands.Count -gt 0) { return $cands[0] }
     return $env:USERPROFILE
+}
+
+function Confirm-HomeDir ([string]$chosen) {
+    if ($NonInteractive -or $HomeDir) { return $chosen }
+    $cands = @(Get-HomeCandidates)
+    if ($cands.Count -le 1) { return $chosen }
+    Write-Host ""
+    Write-Host "Confirm install home (configs go under <home>\.claude, <home>\.claude-code-router):" -ForegroundColor White
+    for ($i = 0; $i -lt $cands.Count; $i++) {
+        $mark = if ($cands[$i] -eq $chosen) { '*' } else { ' ' }
+        $hit  = if (Test-Path -LiteralPath (Join-Path $cands[$i] '.claude\settings.json')) { '(has .claude)' } else { '' }
+        '{0}{1}) {2}  {3}' -f $mark, ($i+1), $cands[$i], $hit | Write-Host
+    }
+    $ans = Read-Host "Pick number [default: $chosen]"
+    if ([string]::IsNullOrWhiteSpace($ans)) { return $chosen }
+    if ($ans -match '^\d+$') {
+        $n = [int]$ans
+        if ($n -ge 1 -and $n -le $cands.Count) { return $cands[$n-1] }
+    }
+    return $chosen
 }
 
 function Say  ([string]$m) { Write-Host "==> $m" -ForegroundColor Cyan }
@@ -299,11 +342,11 @@ function Install-LccWrapper {
 # ----- main -----
 Say "LocalClaudeCode installer starting"
 Ensure-Node
-# HomeResolved needs Node (uses os.homedir()), so resolve after Ensure-Node.
 $script:HomeResolved = Resolve-HomeDir
+$script:HomeResolved = Confirm-HomeDir -chosen $script:HomeResolved
 OK "Home dir: $script:HomeResolved"
 if ($script:HomeResolved -ne $env:USERPROFILE) {
-    Warn "USERPROFILE ($env:USERPROFILE) differs from detected home — using detected home."
+    Warn "USERPROFILE ($env:USERPROFILE) differs from install home — using install home."
 }
 Ensure-Ollama
 Refresh-Path
