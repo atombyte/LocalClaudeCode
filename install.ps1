@@ -48,12 +48,14 @@ function Get-HomeCandidates {
             if ($h -and (Test-Path -LiteralPath $h)) { $c.Add($h) }
         } catch { }
     }
-    return $c | Select-Object -Unique
+    # Force array return. A scalar-string pipeline result indexed as [0]
+    # returns the first CHARACTER on PS, not the string itself.
+    return ,@($c | Select-Object -Unique)
 }
 
 function Resolve-HomeDir {
-    $cands = Get-HomeCandidates
-    if ($HomeDir) { return $cands[0] }
+    $cands = @(Get-HomeCandidates)
+    if ($HomeDir -and $cands.Count -gt 0) { return $cands[0] }
 
     # 1. Any candidate that already has a Claude config → use it.
     foreach ($p in $cands) {
@@ -354,6 +356,9 @@ Say "LocalClaudeCode installer starting"
 Ensure-Node
 $script:HomeResolved = Resolve-HomeDir
 $script:HomeResolved = Confirm-HomeDir -chosen $script:HomeResolved
+if (-not $script:HomeResolved -or -not (Test-Path -LiteralPath $script:HomeResolved -PathType Container)) {
+    Die "Could not resolve a valid home directory (got: '$script:HomeResolved'). Re-run with -HomeDir 'C:\Users\<you>'."
+}
 OK "Home dir: $script:HomeResolved"
 if ($script:HomeResolved -ne $env:USERPROFILE) {
     Warn "USERPROFILE ($env:USERPROFILE) differs from install home — using install home."
