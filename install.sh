@@ -344,7 +344,13 @@ install_lcc_wrapper() {
     target="$HOME/.local/bin/lcc"
     mkdir -p "$HOME/.local/bin"
   fi
+  # ANTHROPIC_API_KEY forces Claude Code into API-key auth mode so the ccr
+  # proxy is actually used. Without it, a cached OAuth session (Pro/Max
+  # subscription) takes precedence and Claude Code silently bypasses ccr,
+  # hitting api.anthropic.com directly.
   local script='#!/usr/bin/env bash
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-ccr-local}"
+export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-ccr-local}"
 exec ccr code "$@"
 '
   if [[ -n "${SUDO:-}" ]]; then

@@ -328,7 +328,17 @@ function Install-LccWrapper {
     $dir = Join-Path $script:HomeResolved '.local\bin'
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $cmd = Join-Path $dir 'lcc.cmd'
-    $content = "@echo off`r`nccr code %*`r`n"
+    # ANTHROPIC_API_KEY must be set to force Claude Code into API-key auth.
+    # Without it, a cached OAuth session (Pro/Max subscription) takes
+    # precedence and Claude Code hits api.anthropic.com directly, bypassing
+    # the ccr proxy — so the "local model" routing silently breaks.
+    $content = @"
+@echo off
+setlocal
+set ANTHROPIC_API_KEY=ccr-local
+set ANTHROPIC_AUTH_TOKEN=ccr-local
+ccr code %*
+"@
     [System.IO.File]::WriteAllText($cmd, $content, [System.Text.ASCIIEncoding]::new())
     OK "Installed wrapper: $cmd"
 
