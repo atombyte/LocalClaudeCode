@@ -11,12 +11,35 @@
 [CmdletBinding()]
 param(
     [string] $Model,
+    [string] $HomeDir,
     [switch] $NonInteractive,
     [switch] $Yes
 )
 
 $ErrorActionPreference = 'Stop'
 if ($Yes) { $NonInteractive = $true }
+
+# Resolve the real user home. $env:USERPROFILE is unreliable (can be
+# redirected by launchers, portable setups, or elevated shells). Claude Code
+# and Node-based tools read from Node's os.homedir() — use the same source so
+# configs land where Claude Code will actually look for them.
+function Resolve-HomeDir {
+    if ($HomeDir) { return (Resolve-Path -LiteralPath $HomeDir).Path }
+    if (Get-Command node -ErrorAction SilentlyContinue) {
+        try {
+            $h = (& node -e "process.stdout.write(require('os').homedir())" 2>$null).Trim()
+            if ($h -and (Test-Path -LiteralPath $h)) { return $h }
+        } catch { }
+    }
+    if ($env:HOME -and (Test-Path -LiteralPath $env:HOME)) { return $env:HOME }
+    # Last resort: construct from HOMEDRIVE+HOMEPATH (Windows-standard) before
+    # falling back to USERPROFILE, which we consider least trustworthy here.
+    if ($env:HOMEDRIVE -and $env:HOMEPATH) {
+        $cand = Join-Path $env:HOMEDRIVE $env:HOMEPATH
+        if (Test-Path -LiteralPath $cand) { return $cand }
+    }
+    return $env:USERPROFILE
+}
 
 function Say  ([string]$m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function OK   ([string]$m) { Write-Host "OK  $m" -ForegroundColor Green }
@@ -167,7 +190,7 @@ function Prompt-Model ([string]$suggested) {
 }
 
 function Write-CcrConfig ([string]$model) {
-    $dir = Join-Path $env:USERPROFILE '.claude-code-router'
+    $dir = Join-Path $script:HomeResolved '.claude-code-router'
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $cfg = Join-Path $dir 'config.json'
     if (Test-Path $cfg) {
@@ -198,7 +221,7 @@ function Write-CcrConfig ([string]$model) {
 }
 
 function Merge-ClaudeSettings {
-    $dir = Join-Path $env:USERPROFILE '.claude'
+    $dir = Join-Path $script:HomeResolved '.claude'
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $cfg = Join-Path $dir 'settings.json'
 
@@ -259,7 +282,7 @@ function Merge-ClaudeSettings {
 }
 
 function Install-LccWrapper {
-    $dir = Join-Path $env:USERPROFILE '.local\bin'
+    $dir = Join-Path $script:HomeResolved '.local\bin'
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $cmd = Join-Path $dir 'lcc.cmd'
     $content = "@echo off`r`nccr code %*`r`n"
@@ -276,6 +299,12 @@ function Install-LccWrapper {
 # ----- main -----
 Say "LocalClaudeCode installer starting"
 Ensure-Node
+# HomeResolved needs Node (uses os.homedir()), so resolve after Ensure-Node.
+$script:HomeResolved = Resolve-HomeDir
+OK "Home dir: $script:HomeResolved"
+if ($script:HomeResolved -ne $env:USERPROFILE) {
+    Warn "USERPROFILE ($env:USERPROFILE) differs from detected home — using detected home."
+}
 Ensure-Ollama
 Refresh-Path
 Start-OllamaIfNeeded
@@ -310,7 +339,7 @@ The router (ccr) proxies Claude Code's Anthropic API traffic to Ollama at
 Plugins preseeded (superpowers, context7, claude-mem, ralph-loop, ...).
 On first launch Claude Code may ask you to trust each marketplace — accept.
 
-Switch model later: edit %USERPROFILE%\.claude-code-router\config.json
+Switch model later: edit $($script:HomeResolved)\.claude-code-router\config.json
                     then run: ccr restart
 Pull more models:   ollama pull <name>   (https://ollama.com/library)
 "@
